@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: meeting-ai-gateway
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: INTERNAL_SERVICE_SECRET
+        sync: false
+      - key: NODE_ENV
+        value: production

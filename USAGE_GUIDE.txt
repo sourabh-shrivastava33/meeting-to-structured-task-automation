@@ -1,0 +1,358 @@
+================================================================================
+  USAGE GUIDE — Calling the Meeting AI API from Your Zoom Webhook Service
+================================================================================
+
+This guide shows how to integrate the Meeting-to-Structured-Task API with your
+existing Zoom webhook service. When a Zoom meeting ends, your service sends
+the transcript to this API and gets structured action items, blockers, 
+decisions, risks, and a summary back.
+
+
+================================================================================
+  1. YOUR DEPLOYED API URL
+================================================================================
+
+After deploying to Render (see section 4), your API will be available at:
+
+    https://meeting-ai-gateway.onrender.com
+
+The endpoint you will call:
+
+    POST https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript
+
+
+================================================================================
+  2. HOW TO CALL IT FROM YOUR ZOOM SERVICE
+================================================================================
+
+When your Zoom webhook fires on "meeting.ended", extract the transcript and
+POST it to the API. Here are examples in common languages:
+
+
+--- Node.js / TypeScript (using fetch) ---
+
+async function processZoomTranscript(zoomTranscript: string) {
+  const API_URL = "https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript";
+  const SECRET  = process.env.MEETING_AI_SECRET;  // your INTERNAL_SERVICE_SECRET
+
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${SECRET}`,
+    },
+    body: JSON.stringify({ transcript: zoomTranscript }),
+  });
+
+  const result = await response.json();
+
+  if (!result.success) {
+    console.error("API Error:", result.error);
+    return null;
+  }
+
+  // result.data.summary  → professional meeting summary (string)
+  // result.data.tasks    → array of structured tasks
+  console.log("Summary:", result.data.summary);
+
+  // Filter tasks by type
+  const actionItems = result.data.tasks.filter(t => t.type === "ACTION_ITEM");
+  const blockers    = result.data.tasks.filter(t => t.type === "BLOCKER");
+  const decisions   = result.data.tasks.filter(t => t.type === "DECISION");
+  const risks       = result.data.tasks.filter(t => t.type === "RISK");
+
+  console.log(`Found: ${actionItems.length} action items, ${blockers.length} blockers`);
+
+  return result.data;
+}
+
+
+--- Python (using requests) ---
+
+import requests
+import os
+
+def process_zoom_transcript(transcript: str):
+    API_URL = "https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript"
+    SECRET  = os.environ["MEETING_AI_SECRET"]
+
+    response = requests.post(
+        API_URL,
+        json={"transcript": transcript},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {SECRET}",
+        },
+        timeout=120,  # AI processing can take 30-90 seconds
+    )
+
+    data = response.json()
+
+    if not data.get("success"):
+        print(f"Error: {data.get('error')}")
+        return None
+
+    print(f"Summary: {data['data']['summary']}")
+    print(f"Tasks found: {len(data['data']['tasks'])}")
+
+    action_items = [t for t in data["data"]["tasks"] if t["type"] == "ACTION_ITEM"]
+    blockers     = [t for t in data["data"]["tasks"] if t["type"] == "BLOCKER"]
+
+    return data["data"]
+
+
+--- cURL (for testing) ---
+
+curl -X POST https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_INTERNAL_SECRET" \
+  -d '{
+    "transcript": "John: Hey everyone, let us discuss the roadmap.\nSarah: We are blocked on the API keys from security.\nMike: I will follow up with them by Wednesday.\nJohn: Agreed. Let us use REST for the MVP."
+  }'
+
+
+================================================================================
+  3. RESPONSE FORMAT — WHAT YOU GET BACK
+================================================================================
+
+{
+  "success": true,
+  "data": {
+    "summary": "The team discussed the project roadmap. The API integration
+                is blocked by missing API keys from security. Mike will follow
+                up by Wednesday. The team decided to use REST for the MVP.",
+    "tasks": [
+      {
+        "title": "Follow up with security team",
+        "description": "Mike will contact the security team by Wednesday about API keys",
+        "type": "ACTION_ITEM",
+        "assignee": "Mike",
+        "impact": null,
+        "due_date": "Wednesday",
+        "status": "OPEN"
+      },
+      {
+        "title": "Missing API keys from security",
+        "description": "Blocked on receiving production API keys from security team",
+        "type": "BLOCKER",
+        "assignee": null,
+        "impact": "Cannot proceed with API integration",
+        "due_date": null,
+        "status": "OPEN"
+      },
+      {
+        "title": "Use REST for MVP",
+        "description": "Team decided to use REST instead of GraphQL for initial MVP",
+        "type": "DECISION",
+        "assignee": null,
+        "impact": null,
+        "due_date": null,
+        "status": "OPEN"
+      }
+    ]
+  }
+}
+
+
+Task Types:
+  ACTION_ITEM  → Concrete task assigned to someone (has assignee, due_date)
+  BLOCKER      → Something blocking progress (has impact field)
+  DECISION     → A finalized agreement (has description of the decision)
+  RISK         → Potential future issue (has impact field)
+
+
+================================================================================
+  4. FULL-FLOW: ZOOM WEBHOOK → THIS API → YOUR DATABASE
+================================================================================
+
+Here is a complete example of wiring your Zoom service to this API:
+
+
+--- Example: Zoom Webhook Handler (Node.js/Express) ---
+
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+// Your Zoom webhook endpoint
+app.post("/webhook/zoom", async (req, res) => {
+  const event = req.body;
+
+  // Only process meeting.ended events
+  if (event.event !== "meeting.ended") {
+    return res.status(200).json({ message: "ignored" });
+  }
+
+  // Step 1: Get the transcript from Zoom (or your recording service)
+  const transcript = await getTranscriptFromZoom(event.payload.object.id);
+
+  // Step 2: Send to Meeting AI API
+  const AI_API = "https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript";
+  const response = await fetch(AI_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.MEETING_AI_SECRET}`,
+    },
+    body: JSON.stringify({ transcript }),
+  });
+
+  const result = await response.json();
+
+  if (!result.success) {
+    console.error("AI processing failed:", result.error);
+    return res.status(500).json({ error: "AI processing failed" });
+  }
+
+  // Step 3: Do something with the structured data
+  const { summary, tasks } = result.data;
+
+  // Example: Save to your database
+  await saveToDatabase({
+    meetingId: event.payload.object.id,
+    summary: summary,
+    actionItems: tasks.filter(t => t.type === "ACTION_ITEM"),
+    blockers: tasks.filter(t => t.type === "BLOCKER"),
+    decisions: tasks.filter(t => t.type === "DECISION"),
+    risks: tasks.filter(t => t.type === "RISK"),
+  });
+
+  // Example: Send Slack notification
+  await sendSlackMessage(`Meeting ended! Found ${tasks.length} tasks.`);
+
+  res.status(200).json({ processed: true, taskCount: tasks.length });
+});
+
+
+================================================================================
+  5. HOW TO DEPLOY ON RENDER (FREE TIER) — STEP BY STEP
+================================================================================
+
+  Step 1: Push your code to GitHub
+  ────────────────────────────────
+    git add .
+    git commit -m "Deploy to Render"
+    git push origin main
+
+
+  Step 2: Create a Render account
+  ────────────────────────────────
+    Go to https://render.com and sign up (free).
+
+
+  Step 3: Create a New Web Service
+  ────────────────────────────────
+    a. Click "New" → "Web Service"
+    b. Connect your GitHub repository
+    c. Configure:
+
+       Name:            meeting-ai-gateway
+       Region:          Pick closest to your users
+       Branch:          main
+       Runtime:         Node
+       Build Command:   npm install && npm run build
+       Start Command:   npm start
+
+    d. Select the "Free" plan
+
+
+  Step 4: Add Environment Variables
+  ────────────────────────────────
+    In the Render dashboard, go to "Environment" and add:
+
+       OPENAI_API_KEY           = sk-your-openai-key
+       INTERNAL_SERVICE_SECRET  = pick-a-strong-random-string
+       NODE_ENV                 = production
+
+    IMPORTANT: The INTERNAL_SERVICE_SECRET you set here is the Bearer token
+    your Zoom service must send in the Authorization header.
+
+
+  Step 5: Deploy
+  ────────────────────────────────
+    Click "Create Web Service". Render will:
+      1. Clone your repo
+      2. Run: npm install && npm run build
+      3. Run: npm start
+      4. Your API will be live at: https://meeting-ai-gateway.onrender.com
+
+
+  Step 6: Test it
+  ────────────────────────────────
+    # Health check (no auth needed)
+    curl https://meeting-ai-gateway.onrender.com/health
+
+    # Process a transcript
+    curl -X POST https://meeting-ai-gateway.onrender.com/api/v1/ai/process-transcript \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer YOUR_INTERNAL_SERVICE_SECRET" \
+      -d '{"transcript": "Alice: We need to ship the feature by Friday.\nBob: I am blocked on the design review."}'
+
+
+  ALTERNATIVE: One-Click Deploy with render.yaml
+  ────────────────────────────────
+    The repo includes a render.yaml file. You can use Render Blueprints:
+      a. Go to https://render.com/deploy
+      b. Point it to your GitHub repo
+      c. It will auto-detect render.yaml and set everything up
+      d. You still need to manually enter the env var VALUES in the dashboard
+
+
+================================================================================
+  6. IMPORTANT NOTES FOR RENDER FREE TIER
+================================================================================
+
+  1. COLD STARTS: Free tier services "spin down" after 15 minutes of
+     inactivity. The first request after a cold start takes 30-60 seconds
+     to respond. Subsequent requests are fast.
+
+  2. TIMEOUT: AI processing (5 parallel OpenAI calls) typically takes
+     10-30 seconds. Set your HTTP client timeout to at least 120 seconds
+     to account for cold starts + AI processing time.
+
+  3. MEMORY: Free tier gives 512MB RAM. This service is lightweight and
+     well within limits.
+
+  4. KEEP ALIVE (Optional): To avoid cold starts, you can set up a free
+     cron job (e.g., cron-job.org) to ping your /health endpoint every
+     14 minutes.
+
+  5. CUSTOM DOMAIN: Free tier supports custom domains. Add one in the
+     Render dashboard under "Settings" → "Custom Domains".
+
+  6. LOGS: View real-time logs in the Render dashboard to debug issues.
+
+
+================================================================================
+  7. SECURITY CHECKLIST
+================================================================================
+
+  [ ] Use a strong, random INTERNAL_SERVICE_SECRET (32+ characters)
+  [ ] Never commit .env to git (it's already in .gitignore)
+  [ ] Store the same secret in both Render and your Zoom service's env
+  [ ] Use HTTPS only (Render provides this automatically)
+  [ ] Set reasonable timeout in your Zoom webhook (120s recommended)
+
+
+================================================================================
+  8. OPTIONAL: PRE-PROCESS LONG TRANSCRIPTS
+================================================================================
+
+If your Zoom meetings are very long (1+ hours), the transcript may exceed
+LLM token limits. Use the transcript pre-processing endpoint first:
+
+  Step 1: Chunk the transcript
+  
+    POST /api/v1/transcript/process
+    Body: { "transcript": "<very long transcript>" }
+    Response: { "chunks": ["chunk1...", "chunk2..."], "success": true }
+
+  Step 2: Process each chunk through the AI endpoint
+
+    for (const chunk of chunks) {
+      const result = await processTranscript(chunk);
+      // Merge results from each chunk
+    }
+
+================================================================================
