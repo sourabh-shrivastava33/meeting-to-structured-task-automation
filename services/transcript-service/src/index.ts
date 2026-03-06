@@ -9,7 +9,7 @@ app.use((req, res, next) => {
     req.headers.authorization !==
     `Bearer ${process.env.INTERNAL_SERVICE_SECRET}`
   ) {
-    res.status(400).json({
+    return res.status(401).json({
       error: "Provide the valid secret to access this service",
       success: false,
     });
